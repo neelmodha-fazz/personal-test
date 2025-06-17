@@ -1,0 +1,81 @@
+name: Reset release branch test
+
+on:
+  workflow_dispatch:
+  
+    inputs:
+
+      commit_hash:
+        description: "The full commit hash from your repo's history"
+        type: string
+        required: true
+
+      branch_name:
+        description: "The name of the branch to reset (for testing)"
+        type: string
+        required: true
+        default: 'release'
+
+jobs:
+  reset_release_branch:
+
+    runs-on: ubuntu-latest
+    name: Reset release branch
+    steps:
+
+      - uses: actions/checkout@v4
+        name: Checkout repository
+        with:
+          ref: main
+          fetch-depth: 0 
+      
+      - name: Delete existing branch
+        run: |
+          # The || true prevents the workflow from failing if the branch doesn't exist
+          git push origin --delete ${{ inputs.branch_name }} || echo "Branch ${{ inputs.branch_name }} did not exist, proceeding to create it."
+      
+      - name: Create and Verify Branch with Retries
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_HASH: ${{ inputs.commit_hash }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+        run: |
+          MAX_ATTEMPTS=3
+          # Using a shorter delay for testing purposes
+          DELAY_MINUTES=1 
+          ATTEMPT=1
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "---"
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS:"
+            
+            # Step 1: Attempt to create the branch
+            echo "Creating branch '$BRANCH_NAME' from commit $COMMIT_HASH..."
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              /repos/${{ github.repository }}/git/refs \
+              -f ref="refs/heads/$BRANCH_NAME" \
+              -f sha="$COMMIT_HASH" || echo "Branch creation command sent. It might have failed or the branch already existed."
+
+            # Step 2: Wait for a few seconds for propagation
+            echo "Waiting 10 seconds for branch propagation..."
+            sleep 10
+
+            # Step 3: Verify the branch exists on remote
+            echo "Verifying remote branch '$BRANCH_NAME'..."
+            if git ls-remote --exit-code --heads origin "$BRANCH_NAME"; then
+              echo "✅ Success! Remote branch '$BRANCH_NAME' is verified."
+              exit 0
+            fi
+
+            # Step 4: If verification fails and more attempts are left, wait and retry
+            ATTEMPT=$((ATTEMPT + 1))
+            if [ $ATTEMPT -le $MAX_ATTEMPTS ]; then
+              echo "⚠️ Verification failed. Retrying in $DELAY_MINUTES minute(s)..."
+              sleep $((DELAY_MINUTES * 60))
+            else
+              echo "❌ Error: Branch '$BRANCH_NAME' could not be verified after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+          done
